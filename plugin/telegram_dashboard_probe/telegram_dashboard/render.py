@@ -341,9 +341,13 @@ class _Item:
     name: str
     line: str
     verdict: _Verdict
+    # Local patch: the label the ✓ row prints, when the compact row should carry a count
+    # (``✓ Cron 1``) while the item keeps the name the details and _ITEM_SOURCES key on.
+    row: str | None = None
 
 
-def _item(name: str, line: str, well: bool, state: str, unchecked: Set[str]) -> _Item:
+def _item(name: str, line: str, well: bool, state: str, unchecked: Set[str],
+          row: str | None = None) -> _Item:
     """The thing with its verdict: ``well`` as its 0.12.0 line says; ``unchecked`` for no source
     on this installation (``unsupported``) or no data (``unknown``) from a source the ❔ line
     names, so the screen says it once and nothing vanishes; ``broken`` otherwise."""
@@ -352,7 +356,7 @@ def _item(name: str, line: str, well: bool, state: str, unchecked: Set[str]) -> 
         verdict = "well"
     elif state == "unsupported" or (state == "unknown" and _ITEM_SOURCES[name] in unchecked):
         verdict = "unchecked"
-    return _Item(name, line, verdict)
+    return _Item(name, line, verdict, row)
 
 
 def render_dashboard(
@@ -491,7 +495,11 @@ def _items(
     if snapshot.cron is not None:
         line = _cron_line(snapshot.cron, reference, zone, details)
         state = snapshot.cron.state
-        items.append(_item("Cron", line, state == "ok", state, unchecked))
+        # Local patch: the compact row carries the job count (``✓ Cron 1``) — the per-job table
+        # lives in the rich form only, and the rich view is off on this host.
+        counted = snapshot.cron.jobs or ()
+        row_label = f"Cron {len(counted) or (snapshot.cron.active or 0)}" if counted or snapshot.cron.active else None
+        items.append(_item("Cron", line, state == "ok", state, unchecked, row=row_label))
     return items
 
 
@@ -506,7 +514,7 @@ def _attention(snapshot: DashboardSnapshot, items: list[_Item]) -> tuple[str, ..
 def _works_row(items: list[_Item]) -> tuple[str, ...]:
     """``✓ Gateway ✓ Telegram ✓ Backup ✓ Drift ✓ Cron``: every item that is well, no row
     without one."""
-    names = [f"{OK_MARK}{_ROW_SPACE}{item.name}" for item in items if item.verdict == "well"]
+    names = [f"{OK_MARK}{_ROW_SPACE}{item.row or item.name}" for item in items if item.verdict == "well"]
     return (" ".join(names),) if names else ()
 
 
@@ -672,6 +680,16 @@ def _cron_details(cron: CronSummary, zone: tzinfo) -> list[str]:
         # A stamp the scan could not read, named beside the ticker it belongs to.
         head += f" ({sanitize_public_text(cron.detail, limit=60)})"
     words = [head]
+    # Local patch: the rich view draws the per-job table; the HTML view gets the names and the
+    # engine's own schedule words here instead, so a job is never invisible on this host.
+    jobs = cron.jobs or ()
+    if jobs:
+        listed = " · ".join(
+            sanitize_public_text(job.name, limit=32)
+            + (f" ({sanitize_public_text(job.schedule, limit=24)})" if job.schedule else "")
+            for job in jobs[:6]
+        )
+        words.append(f"Cron jobs: {listed}")
     words.extend(_failure_words(failure, zone) for failure in (*cron.failing, *cron.held))
     if cron.ticker_error:
         words.append(f"Cron ticker error: {sanitize_public_text(cron.ticker_error, limit=24)}")
