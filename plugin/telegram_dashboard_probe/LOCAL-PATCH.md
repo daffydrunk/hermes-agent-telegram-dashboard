@@ -62,6 +62,31 @@ in Details (`Cron jobs: memory-review (every day at 9am)`). `verify.py` asserts 
 `Cron jobs:` line whenever `cron/jobs.json` holds a job, so a future upstream refactor of
 the row or the details cannot silently drop it again.
 
+## Rich replies: on for all three profiles
+
+`platforms.telegram.rich_messages = true` in `default`, `docs`, `plc` (2026-11-02), verified by
+the owner: a pipe table in a reply renders as a native table. Mechanics that matter:
+
+- The flag is read when the adapter is built, so a config change alone does nothing.
+- The multiplexer's config watcher rebuilds only NON-launch profiles
+  (`changed = [... and n != active ...]`), and `unserve-profile`/`serve-profile` refuse the
+  launch profile ("a non-launch profile name is required"). Therefore `default` needs a real
+  `hermes gateway restart`, while `docs`/`plc` can be re-served with `hermes -p <n> gateway restart`.
+- Ordinary replies stay MarkdownV2; only content with a pipe table, task list, `<details>` or
+  block math takes the rich path. Streaming preview stays raw (`rich_drafts` off).
+- A profile's agent will otherwise repeat the stale belief "Telegram does not render tables";
+  the rule written into `profiles/docs/memories/USER.md` corrects it (memory is injected at
+  session start, so it applies after `/new`).
+
+## Sixth patch: never deliver with another profile's bot
+
+`live_adapter()` used to resolve `runner.adapters["telegram"]` — the LAUNCH profile's adapter —
+when the plugin was not wired yet. On the first tick after a gateway restart a secondary
+profile's dashboard was therefore created in the default chat (plc wrote message 109 there).
+Now: no adapter reference → wait; the launch profile's dict is consulted only when the plugin's
+own home is the launch home; otherwise only `_profile_adapters` are considered. Verified by
+`adapter_generation: 1` in all three records and a recreate in the right chat.
+
 ## Revert / update
 
 - Revert: restore `telegram_dashboard/limits.py.bak-20261102` and
