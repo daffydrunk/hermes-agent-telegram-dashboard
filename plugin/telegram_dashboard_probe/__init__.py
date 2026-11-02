@@ -635,14 +635,25 @@ class ProbeRuntime:
     # ------------------------------------------------------------------ resolution
 
     def live_adapter(self) -> Any | None:
-        """The adapter the runner publishes now, else the one last handed to us; connected only."""
+        """The adapter this instance was wired to, else the runner's connected one.
+
+        Local patch: ``runner.adapters`` belongs to the gateway's LAUNCH profile. Under
+        multiplexing a secondary profile's plugin resolves the default profile's adapter there
+        and posts its dashboard with the wrong bot, into the wrong chat (that is how docs and
+        plc first delivered into the default chat). ``self.latest`` is the adapter the wire
+        factory received — the right bot — and ``wire()`` refreshes it on every reconnect.
+        """
         latest = self.latest
+        if latest is not None and bool(getattr(latest, "is_connected", False)):
+            return latest
         runner = getattr(latest, "gateway_runner", None)
         adapters = getattr(runner, "adapters", None)
         candidates: list[Any] = []
         if isinstance(adapters, dict):
             candidates.append(adapters.get(getattr(latest, "platform", None)))
-        candidates.append(latest)
+        for per_profile in (getattr(runner, "_profile_adapters", None) or {}).values():
+            if isinstance(per_profile, dict):
+                candidates.extend(per_profile.values())
         for candidate in candidates:
             if candidate is not None and bool(getattr(candidate, "is_connected", False)):
                 return candidate
