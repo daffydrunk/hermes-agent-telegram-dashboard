@@ -68,6 +68,11 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+
+def _profile_name_of(home: Path) -> str | None:
+    """``docs`` for ``<host>/profiles/docs``, ``None`` for the launch home (local patch)."""
+    return home.name if home.parent.name == "profiles" else None
+
 logger = logging.getLogger("hermes.plugins.telegram_dashboard_probe")
 
 PLATFORM = "telegram"
@@ -635,25 +640,30 @@ class ProbeRuntime:
     # ------------------------------------------------------------------ resolution
 
     def live_adapter(self) -> Any | None:
-        """The adapter this instance was wired to, else the runner's connected one.
+        """The adapter this instance was wired to, else this profile's live adapter.
 
-        Local patch: ``runner.adapters`` belongs to the gateway's LAUNCH profile. Under
-        multiplexing a secondary profile's plugin resolves the default profile's adapter there
-        and posts its dashboard with the wrong bot, into the wrong chat (that is how docs and
-        plc first delivered into the default chat). ``self.latest`` is the adapter the wire
-        factory received — the right bot — and ``wire()`` refreshes it on every reconnect.
+        Local patch: ``runner.adapters`` belongs to the gateway's LAUNCH profile. Before the
+        factory runs (or while it is re-wired) a secondary profile's plugin resolved THAT
+        adapter and posted its dashboard with the wrong bot, into the default chat. So: never
+        guess the launch profile's adapter for a profile home — wait for the wire, or take this
+        profile's own adapter from ``_profile_adapters``.
         """
         latest = self.latest
-        if latest is not None and bool(getattr(latest, "is_connected", False)):
+        if latest is None:
+            # Not wired yet: the loop waits ("no connected Telegram adapter") instead of
+            # delivering with somebody else's bot.
+            return None
+        if bool(getattr(latest, "is_connected", False)):
             return latest
         runner = getattr(latest, "gateway_runner", None)
-        adapters = getattr(runner, "adapters", None)
         candidates: list[Any] = []
-        if isinstance(adapters, dict):
-            candidates.append(adapters.get(getattr(latest, "platform", None)))
         for per_profile in (getattr(runner, "_profile_adapters", None) or {}).values():
             if isinstance(per_profile, dict):
                 candidates.extend(per_profile.values())
+        if _profile_name_of(self.settings.hermes_home) is None:
+            adapters = getattr(runner, "adapters", None)
+            if isinstance(adapters, dict):
+                candidates.append(adapters.get(getattr(latest, "platform", None)))
         for candidate in candidates:
             if candidate is not None and bool(getattr(candidate, "is_connected", False)):
                 return candidate
