@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from .backup import BackupPart, collect_backup
-from .compat import Environment, ProbeResult
+from .compat import Environment, ProbeResult, gateway_state_path, profile_name
 from .context_files import SOURCE_NAME as RULES
 from .context_files import RulesPart, read_rules
 from .cron_jobs import SOURCE_NAME as CRON
@@ -241,7 +241,7 @@ def collect_gateway(
 ) -> tuple[GatewaySummary, SourceObservation, tuple[Incident, ...]]:
     """``gateway_state.json`` is written on state transitions only (no periodic heartbeat in
     0.21.1), so ``updated_at`` age is NOT a death signal. Liveness comes from the recorded pid."""
-    path = env.hermes_home / "gateway_state.json"
+    path = gateway_state_path(env.hermes_home)
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
@@ -260,7 +260,9 @@ def collect_gateway(
     pid = payload.get("pid")
     alive = pid_probe(pid) if isinstance(pid, int) and not isinstance(pid, bool) else None
     process = _gateway_process(payload.get("gateway_state"), alive=alive)
-    telegram, error_code, needs_attention = _telegram_platform(payload.get("platforms"), pid)
+    telegram, error_code, needs_attention = _telegram_platform(
+        payload.get("platforms"), pid, profile=profile_name(env.hermes_home)
+    )
     if alive is None:
         # Without liveness the platform entry is a claim by a process we cannot see.
         telegram, needs_attention = "unknown", False
@@ -323,16 +325,28 @@ def _gateway_process(raw: object, *, alive: bool | None) -> Any:
 
 
 def _telegram_platform(
-    platforms: object, writer_pid: object
+    platforms: object, writer_pid: object, profile: str | None = None
 ) -> tuple[PlatformState, str | None, bool]:
     if not isinstance(platforms, dict):
         return "unknown", None, False
     entry: dict[str, Any] | None = None
-    for key, value in platforms.items():
-        is_telegram = isinstance(key, str) and (key == "telegram" or key.endswith(":telegram"))
-        if is_telegram and isinstance(value, dict):
+    # Local patch: prefer this profile's own entry ("docs:telegram") — the gateway record also
+    # carries the launch profile's "telegram", and picking that one reported another bot's state.
+    order: list[str] = []
+    if profile:
+        order.append(f"{profile}:telegram")
+    order.append("telegram")
+    for wanted in order:
+        value = platforms.get(wanted)
+        if isinstance(value, dict):
             entry = value
             break
+    if entry is None:
+        for key, value in platforms.items():
+            is_telegram = isinstance(key, str) and key.endswith(":telegram")
+            if is_telegram and isinstance(value, dict):
+                entry = value
+                break
     if entry is None:
         return "unknown", None, False
     entry_writer = entry.get("writer_pid")

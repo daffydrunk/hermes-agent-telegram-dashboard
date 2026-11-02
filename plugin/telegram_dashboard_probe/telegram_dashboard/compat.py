@@ -95,8 +95,31 @@ class Environment:
     process_started_at: datetime | None = None
 
 
+def gateway_state_path(home: Path) -> Path:
+    """The gateway's own record for this home.
+
+    Local patch: under multiplexing every profile is served by ONE gateway process, and that
+    process writes ``gateway_state.json`` into the LAUNCH home (the default profile). A profile
+    living in ``<host>/profiles/<name>/`` therefore has no file of its own and read as
+    "not on this installation"; fall back to the host's copy.
+    """
+    direct = home / "gateway_state.json"
+    if direct.is_file():
+        return direct
+    if home.parent.name == "profiles":
+        shared = home.parent.parent / "gateway_state.json"
+        if shared.is_file():
+            return shared
+    return direct
+
+
+def profile_name(home: Path) -> str | None:
+    """``docs`` for ``<host>/profiles/docs``, ``None`` for the launch home."""
+    return home.name if home.parent.name == "profiles" else None
+
+
 def probe_gateway_state(env: Environment) -> ProbeResult:
-    path = env.hermes_home / "gateway_state.json"
+    path = gateway_state_path(env.hermes_home)
     if not path.is_file():
         return ProbeResult("gateway_state", "unsupported", "gateway_state.json not found")
     try:
