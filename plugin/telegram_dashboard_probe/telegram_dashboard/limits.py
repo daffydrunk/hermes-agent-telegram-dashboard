@@ -28,7 +28,10 @@ from .workers import Flights, StillRunning, failure_name
 logger = logging.getLogger(__name__)
 
 # Dashboard label -> provider key the facade understands.
-PROVIDERS: tuple[tuple[str, str], ...] = (("claude", "anthropic"), ("codex", "openai-codex"))
+# Local operator patch (2026-11-02): this installation only uses opencode-go; the
+# claude/codex entries were removed so the screen carries no lines for accounts it
+# does not have. Restore PROVIDERS from limits.py.bak-20261102 to revert.
+PROVIDERS: tuple[tuple[str, str], ...] = (("opencode-go", "opencode-go"),)
 FACADE_MODULE = "agent.account_usage"
 FACADE_FUNCTION = "fetch_account_usage"
 

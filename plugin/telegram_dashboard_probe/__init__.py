@@ -1251,7 +1251,20 @@ def register(ctx: Any) -> ProbeRuntime | None:
         return None
     runtime = ProbeRuntime(ctx, settings, import_dashboard())
     _announce_sources(runtime)
-    ctx.register_platform_handler(PLATFORM, runtime.wire)
+
+    # Local operator patch (2026-11-02): the adapter dedupes plugin handler factories by
+    # (plugin, __qualname__), so a bound method re-registered after a plugin reload never
+    # runs again on the same native client and the tick loop stays dead until a gateway
+    # restart. A wrapper with its own qualname is a fresh key, so a control-socket
+    # `reload-plugins` wires this instance and its loop starts without a restart.
+    def wire_after_reload(native: Any, adapter: Any) -> None:
+        runtime.wire(native, adapter)
+
+    # The dedupe key is (plugin, __qualname__), so the wrapper carries the load's own stamp:
+    # every reload is a new key, and the wire is never mistaken for one that already ran.
+    wire_after_reload.__qualname__ = f"wire_after_reload_{datetime.now(UTC):%Y%m%dT%H%M%S%f}"
+
+    ctx.register_platform_handler(PLATFORM, wire_after_reload)
     logger.info(
         "probe: registered Telegram handler factory (period %.0fs)", settings.period_seconds
     )

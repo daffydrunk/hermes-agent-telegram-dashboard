@@ -102,7 +102,7 @@ _STOPPED_GATEWAY = frozenset({"stopped", "exited", "stopping", "crashed", "faile
 _SEVERITY_RANK = {"critical": 0, "warning": 1, "unknown": 2, "normal": 3}
 # Providers the engine's usage facade answers for; Grok and Kimi are read by ``grok.py`` and
 # ``kimi.py`` on their own cadence, each as its own source.
-_PROVIDER_LABELS = {"claude": "Claude", "codex": "Codex"}
+_PROVIDER_LABELS = {"opencode-go": "OpenCode Go"}
 GROK_LABEL = "Grok"
 KIMI_LABEL = "Kimi"
 GrokFetch = QuotaFetch
@@ -185,10 +185,46 @@ def _kill_tree(proc: subprocess.Popen[str]) -> None:
 PidProbe = Callable[[int], bool | None]
 
 
-def default_pid_probe(pid: int) -> bool | None:
-    """True/False when liveness can be asked (POSIX signal 0); None where it cannot (Windows)."""
-    if sys.platform == "win32":
+def _windows_pid_alive(pid: int) -> bool | None:
+    """Liveness on Windows (local patch): OpenProcess + GetExitCodeProcess.
+
+    The upstream probe answers ``None`` here ("cannot be checked on this platform"), which left
+    the gateway and Telegram lines at ``unknown`` and the whole source ``unavailable`` on every
+    Windows install. ``ERROR_INVALID_PARAMETER`` means the pid does not exist,
+    ``ERROR_ACCESS_DENIED`` means it does but belongs to someone else.
+    """
+    try:
+        import ctypes
+        from ctypes import wintypes
+    except Exception:
         return None
+    process_query_limited_information = 0x1000
+    still_active = 259
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        handle = kernel32.OpenProcess(process_query_limited_information, False, int(pid))
+        if not handle:
+            error = ctypes.get_last_error()
+            if error == 87:  # ERROR_INVALID_PARAMETER: no such process
+                return False
+            if error == 5:  # ERROR_ACCESS_DENIED: the process exists
+                return True
+            return None
+        try:
+            code = wintypes.DWORD()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return None
+            return code.value == still_active
+        finally:
+            kernel32.CloseHandle(handle)
+    except Exception:
+        return None
+
+
+def default_pid_probe(pid: int) -> bool | None:
+    """True/False when liveness can be asked; None only where it really cannot."""
+    if sys.platform == "win32":
+        return _windows_pid_alive(pid)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -645,6 +681,30 @@ def merge_quotas(capacity: CapacitySummary, *metrics: QuotaMetric) -> CapacitySu
     return CapacitySummary((*named, *metrics, *trailing))
 
 
+# Local operator patch (2026-11-02): accounts this installation does not have are dropped
+# from the capacity list, so the screen carries no "no data" lines for them. Their
+# collectors still run (they cost nothing without a credential) — only the lines go.
+_HIDDEN_PROVIDERS = frozenset({"claude", "codex", "grok", "kimi", "gemini"})
+# ...and their sources/incidents leave the coverage line as well, so "Not observed" does
+# not name a provider this installation never had.
+_HIDDEN_SOURCES = frozenset({"grok_quota", "kimi_quota", "gemini_log"})
+_HIDDEN_INCIDENT_PREFIXES = ("grok", "kimi", "gemini")
+# Capabilities that are simply not configured on this installation: "unsupported" means
+# "no source here", so the line and its coverage entry are dropped instead of shown.
+_QUIET_SOURCES = frozenset({"drift", "backup", "cron", "cron_runs"})
+
+
+def only_visible(capacity: CapacitySummary) -> CapacitySummary:
+    kept = tuple(
+        quota
+        for quota in capacity.quotas
+        if (quota.provider or "").strip().lower() not in _HIDDEN_PROVIDERS
+    )
+    if len(kept) == len(capacity.quotas):
+        return capacity
+    return CapacitySummary(kept)
+
+
 def _is_trailing(quota: QuotaMetric) -> bool:
     return quota.provider.lower() in _TRAILING_PROVIDERS
 
@@ -883,6 +943,27 @@ def build_snapshot(
     rules: RulesSummary | None = None,
     memory: MemorySummary | None = None,
 ) -> DashboardSnapshot:
+    sources = tuple(source for source in sources if source.name not in _HIDDEN_SOURCES)
+    # Local operator patch (2026-11-02): a capability this installation simply does not
+    # configure (no drift script, no backup status file, no cron jobs file) says nothing about
+    # the health of the thing, so it leaves the screen and the coverage line instead of filling
+    # the header with "not observed".
+    sources = tuple(
+        source
+        for source in sources
+        if not (source.name in _QUIET_SOURCES and source.state == "unsupported")
+    )
+    if getattr(backup, "state", None) == "unsupported":
+        backup = None
+    if getattr(drift, "state", None) == "unsupported":
+        drift = None
+    if getattr(cron, "state", None) == "unsupported":
+        cron = None
+    incidents = tuple(
+        incident
+        for incident in incidents
+        if not incident.incident_id.lower().startswith(_HIDDEN_INCIDENT_PREFIXES)
+    )
     ordered = _screen_incidents(incidents)
     cov = coverage or Coverage(expected_profiles=1, observed_profiles=1)
     counted = tuple(source for source in sources if source.name not in _COVERAGE_ONLY)
@@ -1004,7 +1085,7 @@ def collect_all(
         traffic=traffic,
         rules=rules,
         memory=memory,
-        capacity=merge_external(merge_quotas(capacity, grok, kimi, gemini), metrics),
+        capacity=only_visible(merge_external(merge_quotas(capacity, grok, kimi, gemini), metrics)),
         sources=(
             gateway_source,
             limits_source,
@@ -1315,7 +1396,7 @@ async def collect_all_async(
             traffic=traffic,
             rules=rules,
             memory=memory,
-            capacity=merge_external(merge_quotas(capacity, grok, kimi, gemini), metrics),
+            capacity=only_visible(merge_external(merge_quotas(capacity, grok, kimi, gemini), metrics)),
             sources=(
                 gateway_source,
                 limits_source,
