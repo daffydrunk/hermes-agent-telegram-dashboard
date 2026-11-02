@@ -32,6 +32,36 @@ noise; opencode-go had no line at all.
 The panel returns within one `period_seconds` (settings live in
 `~/.hermes/config.yaml` → `plugins.entries.telegram_dashboard_probe.settings`).
 
+## Rich view: on, and verified on this client
+
+`plugins.entries.telegram_dashboard_probe.settings.rich = true` (2026-11-02). Telegram
+accepted it (`screen_format: rich`, `rich_error: null`) and the owner confirmed the tables
+and folds render correctly in their client. The **engine-wide** switch
+`platforms.telegram.rich_messages` stays **off** — it would change every bot reply, and the
+plugin calls `adapter._bot.do_api_request` itself, so only the dashboard message is rich.
+
+What the rich view adds over HTML: a real `Limits used` table, the `🕒 Cron` fold with the
+per-job table (name, frequency, next run), sectioned Details. If a rich edit is ever refused
+the plugin falls back to HTML in the same tick and retries after `RICH_RETRY_TICKS`; the
+record then says `screen_format: html` with the reason in `rich_error`.
+
+Rollback to the classic view:
+
+```bash
+hermes config set plugins.entries.telegram_dashboard_probe.settings.rich false
+hermes plugins disable telegram_dashboard_probe && hermes plugins enable telegram_dashboard_probe --no-allow-tool-override
+```
+
+## Fifth patch: the cron job visible in the HTML view
+
+1.0.0 draws the cron job table only in the rich form, so with `rich: false` (the previous
+state) a job was invisible: the ✓ row said `✓ Cron` and Details said only
+`Cron 1 active · 0 paused`. `render.py` now carries the count in the compact row
+(`✓ Cron 1`, via a `row` label on `_Item`) and lists names with the engine's schedule words
+in Details (`Cron jobs: memory-review (every day at 9am)`). `verify.py` asserts the
+`Cron jobs:` line whenever `cron/jobs.json` holds a job, so a future upstream refactor of
+the row or the details cannot silently drop it again.
+
 ## Revert / update
 
 - Revert: restore `telegram_dashboard/limits.py.bak-20261102` and
